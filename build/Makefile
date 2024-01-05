@@ -100,6 +100,10 @@ else
 UBOOT_CONFIG_NAME := ${BRAND}_${PROJECT_FULLNAME}_rls_defconfig
 endif
 
+ifeq ($(CONFIG_UBOOT_SPL_CUSTOM),y)
+UBOOT-SPL_CONFIG_NAME := ${BRAND}_${PROJECT_FULLNAME}_spl_defconfig
+endif
+
 ifeq (${RELEASE_VERSION},1)
 uboot_release_action := ${Q}sed -i "s/CONFIG_BOOTDELAY=1/CONFIG_BOOTDELAY=-2/g" ${UBOOT_PATH}/${UBOOT_OUTPUT_FOLDER}/.config
 endif
@@ -139,14 +143,20 @@ ${UBOOT_PATH}/${UBOOT_OUTPUT_FOLDER}:
 
 UBOOT_OUTPUT_CONFIG_PATH := ${UBOOT_PATH}/${UBOOT_OUTPUT_FOLDER}/.config
 UBOOT_DEFAULT_CONFIG_PATH := ${BUILD_PATH}/boards/${CHIP_ARCH_L}/${PROJECT_FULLNAME}/u-boot/${UBOOT_CONFIG_NAME}
+ifeq ($(CONFIG_UBOOT_SPL_CUSTOM),y)
+UBOOT-SPL_DEFAULT_CONFIG_PATH := ${BUILD_PATH}/boards/${CHIP_ARCH_L}/${PROJECT_FULLNAME}/u-boot/${UBOOT-SPL_CONFIG_NAME}
+endif
 
 # Make a copy to .config~
-${UBOOT_OUTPUT_CONFIG_PATH}: ${UBOOT_DEFAULT_CONFIG_PATH} ${BUILD_PATH}/.config
+${UBOOT_OUTPUT_CONFIG_PATH}: ${UBOOT_DEFAULT_CONFIG_PATH} ${UBOOT-SPL_DEFAULT_CONFIG_PATH} ${BUILD_PATH}/.config
 	$(call print_target)
 	${Q}echo "u-boot's defconfig is updated. Use it."
 	${Q}mkdir -p $(dir ${UBOOT_OUTPUT_CONFIG_PATH})
 	${Q}cmp -s ${UBOOT_DEFAULT_CONFIG_PATH} ${UBOOT_OUTPUT_CONFIG_PATH} || \
 		${Q}cp -vb ${UBOOT_DEFAULT_CONFIG_PATH} ${UBOOT_OUTPUT_CONFIG_PATH}
+ifeq ($(CONFIG_UBOOT_SPL_CUSTOM),y)
+		${Q}-cat ${UBOOT-SPL_DEFAULT_CONFIG_PATH} >> ${UBOOT_OUTPUT_CONFIG_PATH}
+endif
 	$(call uboot_release_action)
 	$(call uboot_bootlogo_action)
 ifeq ($(STORAGE_TYPE), spinor)
@@ -199,6 +209,9 @@ u-boot-build: ${UBOOT_PATH}/${UBOOT_OUTPUT_FOLDER} ${UBOOT_CVIPART_DEP} ${UBOOT_
 	${Q}$(MAKE) -j${NPROC} -C ${UBOOT_PATH} olddefconfig
 	${Q}$(MAKE) -j${NPROC} -C ${UBOOT_PATH} all
 	${Q}cat ${UBOOT_PATH}/${UBOOT_OUTPUT_FOLDER}/u-boot.bin > ${UBOOT_PATH}/${UBOOT_OUTPUT_FOLDER}/u-boot-raw.bin
+ifeq (${CONFIG_UBOOT_SPL_CUSTOM},y)
+	${Q}cat ${UBOOT_PATH}/${UBOOT_OUTPUT_FOLDER}/spl/u-boot-spl.bin > ${UBOOT_PATH}/${UBOOT_OUTPUT_FOLDER}/spl/u-boot-spl-raw.bin
+endif
 
 u-boot: u-boot-dep
 
@@ -420,7 +433,7 @@ ifeq ($(CONFIG_KERNEL_ENTRY_HACK),y)
 	${Q}sed -i "s/load = <0x0 0x.*>;/load = <0x0 $(CONFIG_KERNEL_ENTRY_HACK_ADDR)>;/g" ${RAMDISK_PATH}/${RAMDISK_OUTPUT_FOLDER}/multi.its
 	${Q}sed -i "s/entry = <0x0 0x.*>;/entry = <0x0 $(CONFIG_KERNEL_ENTRY_HACK_ADDR)>;/g" ${RAMDISK_PATH}/${RAMDISK_OUTPUT_FOLDER}/multi.its
 endif
-	$(COMMON_TOOLS_PATH)/prebuild/mkimage -f ${RAMDISK_PATH}/${RAMDISK_OUTPUT_FOLDER}/multi.its -k $(RAMDISK_PATH)/keys -r ${RAMDISK_PATH}/${RAMDISK_OUTPUT_FOLDER}/boot.itb
+	${UBOOT_PATH}/build/${CHIP}_${BOARD}/tools/mkimage -f ${RAMDISK_PATH}/${RAMDISK_OUTPUT_FOLDER}/multi.its -k $(RAMDISK_PATH)/keys -r ${RAMDISK_PATH}/${RAMDISK_OUTPUT_FOLDER}/boot.itb
 
 ramboot: kernel-dts
 	$(call print_target)
@@ -437,7 +450,7 @@ ifeq ($(CONFIG_KERNEL_ENTRY_HACK),y)
 	${Q}sed -i "s/load = <0x0 0x.*>;/load = <0x0 $(CONFIG_KERNEL_ENTRY_HACK_ADDR)>;/g" ${RAMDISK_PATH}/${RAMDISK_OUTPUT_FOLDER}/multi.its
 	${Q}sed -i "s/entry = <0x0 0x.*>;/entry = <0x0 $(CONFIG_KERNEL_ENTRY_HACK_ADDR)>;/g" ${RAMDISK_PATH}/${RAMDISK_OUTPUT_FOLDER}/multi.its
 endif
-	$(COMMON_TOOLS_PATH)/prebuild/mkimage -f ${RAMDISK_PATH}/${RAMDISK_OUTPUT_FOLDER}/multi.its -k $(RAMDISK_PATH)/keys -r $(OUTPUT_DIR)/ramboot.itb
+	${UBOOT_PATH}/build/${CHIP}_${BOARD}/tools/mkimage -f ${RAMDISK_PATH}/${RAMDISK_OUTPUT_FOLDER}/multi.its -k $(RAMDISK_PATH)/keys -r $(OUTPUT_DIR)/ramboot.itb
 
 kernel-clean:
 	$(call print_target)
@@ -549,24 +562,15 @@ br-rootfs-prepare:export CROSS_COMPILE_KERNEL=$(patsubst "%",%,$(CONFIG_CROSS_CO
 br-rootfs-prepare:export CROSS_COMPILE_SDK=$(patsubst "%",%,$(CONFIG_CROSS_COMPILE_SDK))
 br-rootfs-prepare:
 	$(call print_target)
-ifneq ($(STORAGE_TYPE), sd)
-	${Q}cp -r ${RAMDISK_PATH}/rootfs/buildroot_fs/arm/* $(BR_ROOTFS_DIR)
-	$(call TARGET_PACKAGE_INSTALL_BR_ROOTFS)
-	${Q}mkdir -p $(BR_ROOTFS_DIR)/etc/init.d/
-	${Q}python3 $(COMMON_TOOLS_PATH)/image_tool/create_automount.py $(FLASH_PARTITION_XML) $(BR_ROOTFS_DIR)/etc/init.d/
-	# Generate /etc/fw_env.config
-	# ${Q}mkdir -p $(BR_ROOTFS_DIR)/etc
-	${Q}python3 $(COMMON_TOOLS_PATH)/image_tool/mkcvipart.py $(FLASH_PARTITION_XML) $(BR_ROOTFS_DIR)/etc --fw_env
-endif
-# copy ko and mmf libs
+	# copy ko and mmf libs
 	${Q}mkdir -p $(BR_ROOTFS_DIR)/mnt/system
 	${Q}cp -arf ${SYSTEM_OUT_DIR}/* $(BR_ROOTFS_DIR)/mnt/system/
 
 # copy milkv overlay files
 ifeq ($(MV_VENDOR), milkv)
-	${Q}cp -arf $(TOP_DIR)/$(MV_VENDOR)/overlay/* $(BR_ROOTFS_DIR)/
+	${Q}cp -arf $(TOP_DIR)/device/$(MV_BOARD)/overlay/* $(BR_ROOTFS_DIR)/
 endif
-# strip
+	# strip
 	${Q}find $(BR_ROOTFS_DIR) -name "*.ko" -type f -printf 'striping %p\n' -exec $(CROSS_COMPILE_KERNEL)strip --strip-unneeded {} \;
 	${Q}find $(BR_ROOTFS_DIR) -name "*.so*" -type f -printf 'striping %p\n' -exec $(CROSS_COMPILE_KERNEL)strip --strip-all {} \;
 	${Q}find $(BR_ROOTFS_DIR) -executable -type f ! -name "*.sh" ! -path "*etc*" ! -path "*.ko" -printf 'striping %p\n' -exec $(CROSS_COMPILE_SDK)strip --strip-all {} 2>/dev/null \;
@@ -579,7 +583,7 @@ br-rootfs-pack:
 	${Q}$(MAKE) -C $(BR_DIR) $(BR_DEFCONFIG) BR2_TOOLCHAIN_EXTERNAL_PATH=$(CROSS_COMPILE_PATH)
 	${Q}$(MAKE) -j${NPROC} -C $(BR_DIR)
 	# ${Q}rm -rf $(BR_ROOTFS_DIR)/*
-# copy rootfs to rawimg dir
+	# copy rootfs to rawimg dir
 	${Q}cp $(TARGET_OUTPUT_DIR)/images/rootfs.ext4 $(OUTPUT_DIR)/rawimages/rootfs_ext4.$(STORAGE_TYPE)
 	$(call raw2cimg ,rootfs_ext4.$(STORAGE_TYPE))
 
@@ -608,7 +612,7 @@ else
 	${Q}ln -s $(OUTPUT_DIR)/rootfs $(OUTPUT_DIR)/fs
 endif
 ifeq ($(MV_VENDOR), milkv)
-	$(TOP_DIR)/$(MV_VENDOR)/gen_burn_image_sd.sh $(OUTPUT_DIR)
+	$(TOP_DIR)/device/gen_burn_image_sd.sh $(OUTPUT_DIR)
 else
 	$(COMMON_TOOLS_PATH)/sd_tools/sd_gen_burn_image.sh $(OUTPUT_DIR)
 endif

@@ -20,3 +20,5 @@ ncscope.*
 
 *.code-workspace
 
+__pycache__
+.vscode
